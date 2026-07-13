@@ -98,8 +98,8 @@ int *add_used_block(ssize_t size)
 
     while (mem_block != NULL)
     {   // This is the best fit, if there is space immediately and
-        assert(mem_block-> marker == BLOCK_MARKER);
-        if ((mem_block-> length + sizeof(block)) >= size && mem_block->in_use == false)
+        assert(mem_block->marker == BLOCK_MARKER);
+        if ((mem_block->length + sizeof(block)) >= size && mem_block->in_use == false)
         {
             if (smallest_block == NULL || smallest_block->length > mem_block->length)
             {
@@ -112,15 +112,38 @@ int *add_used_block(ssize_t size)
     if (smallest_block == NULL)
     { // I think this is that there isn't enough space so we request more heap space.
         block *last_block = find_last_block();
-        while (last_block-> length < size)
+        while (last_block->length < size)
         {
             w_sbrk(4096);
-            last_block-> length +=4096;
+            last_block->length +=4096;
             malloc_header->amount_of_pages +=1;
         }
         smallest_block = last_block;
     }
-
+    smallest_block->in_use = true;
+    int end_of_list = smallest_block->length - size - sizeof(block) - 1;
+    if (end_of_list <= 0)
+    {
+        w_sbrk(4096);
+        malloc_header->amount_of_pages += 1;
+        last_block->length += 4096;
+        end_of_list = smallest_block->length - size - sizeof(block) - 1;
+    }
+    int remaining_size = end_of_list + 1;
+    malloc_header->amount_of_blocks += 1;
+    block *new_block = (block *) ((char *)smallest_block + sizeof(block) + size);
+    new_block->marker = BLOCK_MARKER;
+    new_block->prev = smallest_block;
+    new_block->next = smallest_block->next;
+    if (new_block->next != NULL)
+    {
+        (new_block->next)->prev = new_block;
+    }
+    smallest_block->next = new_block;
+    new_block->length = remaining_size;
+    smallest_block->length = size;
+    malloc_header->lock = false;
+    return (int *)((char *) smallest_block + sizeof(block));
 
 
 }
