@@ -83,21 +83,39 @@ typedef struct free_area block;
 static char *heap_start = NULL;
 
 
+header *get_malloc_header()
+{
+    assert(heap_start != NULL);
+    header *malloc_header = (header *) heap_start;
+    assert(malloc_header->magical_bytes == MAGICAL_BYTES);
+    return malloc_header;
+}
+block *find_last_block()
+{
+    header *malloc_header = get_malloc_header();
+    block *mem_block = (block *)(char *)malloc_header + sizeof(header);
+    while (mem_block->next != NULL)
+    {
+        mem_block= mem_block->next;
+    }
+    return mem_block;
+}
 
 int *add_used_block(ssize_t size)
 {
     header *malloc_header = get_malloc_header();
-    while (malloc_header -> lock)
+    while (malloc_header->lock) // thread safety
     {
-        sleep(1);
+        Sleep(1000);
     };
-    malloc_header -> lock = true;
+    malloc_header->lock = true;
     block *mem_block = (block *) ((char *) heap_start + sizeof(header));
     block *smallest_block = NULL; // This is needed to store the info in mem_block
     block *last_block = mem_block; // This is to store the prev pointer
 
+    // This is the best fit
     while (mem_block != NULL)
-    {   // This is the best fit, if there is space immediately and
+    {
         assert(mem_block->marker == BLOCK_MARKER);
         if ((mem_block->length + sizeof(block)) >= size && mem_block->in_use == false)
         {
@@ -109,19 +127,20 @@ int *add_used_block(ssize_t size)
         last_block = mem_block;
         mem_block = mem_block->next;
     }
+    // I think this is that there isn't enough space so we request more heap space.
     if (smallest_block == NULL)
-    { // I think this is that there isn't enough space so we request more heap space.
+    {
         block *last_block = find_last_block();
         while (last_block->length < size)
         {
             w_sbrk(4096);
-            last_block->length +=4096;
+            last_block->length +=4096; // this makes the last free_block 4096 bytes larger
             malloc_header->amount_of_pages +=1;
         }
         smallest_block = last_block;
     }
     smallest_block->in_use = true;
-    int end_of_list = smallest_block->length - size - sizeof(block) - 1;
+    int end_of_list = smallest_block->length - size - sizeof(block) - 1; // can we add the header space as well
     if (end_of_list <= 0)
     {
         w_sbrk(4096);
@@ -144,8 +163,6 @@ int *add_used_block(ssize_t size)
     smallest_block->length = size;
     malloc_header->lock = false;
     return (int *)((char *) smallest_block + sizeof(block));
-
-
 }
 /// returns an int pointer
 int *an_malloc(intptr_t size)
@@ -173,6 +190,55 @@ int *an_malloc(intptr_t size)
     first_block -> next = NULL;
     }
     return add_used_block(size);
-
 }
 
+bool an_free(void *ptr)
+{
+    header *malloc_header = get_malloc_header();
+    while(malloc_header->lock)
+    {
+        Sleep(1000);
+    }
+    malloc_header->lock = true;
+    block *mem_block = ptr - sizeof(block);
+    if (mem_block->marker != BLOCK_MARKER){
+        return false;
+    }
+    else{
+        mem_block->in_use = false;
+        memset(ptr, 0, mem_block->length);
+        // forward case
+        if (mem_block->next != NULL && (mem_block->next)->in_use == false){ // TODO: There are many edge cases we need to check here
+            block *not_used = mem_block->next;
+            if (not_used != NULL){
+                mem_block->next = not_used->next;
+                if (not_used->next != NULL){
+                    not_used->next->prev = mem_block;
+                }
+                else{
+                    mem_block->next = NULL;
+                }
+                mem_block->length += sizeof(block) + not_used->length;
+                memset((void *) not_used, 0, mem_block->length); // erase header and data
+                malloc_header->amount_of_blocks -=1;
+            }
+            // backward case
+            if (mem_block->prev != NULL && (mem_block->prev)->in_use == false){
+                block *del_prev_block = mem_block;
+                mem_block = mem_block->prev;
+                mem_block->length += sizeof(block) + del_prev_block->length;
+                mem_block->next = del_prev_block->next;
+                if (mem_block->next != NULL)
+                {
+                    mem_block->next->prev = mem_block;
+                }
+                malloc_header->amount_of_blocks -=1;
+            }
+            reduce_heap_size();
+        }
+    }
+    malloc_header->lock = false;
+    return true;
+
+
+}
