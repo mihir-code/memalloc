@@ -60,8 +60,6 @@ int main(void)
 }
 
 
-const int MAGICAL_BYTES = 0x55;
-const int BLOCK_MARKER = 0xDD;
 struct free_area // block of memory
 {
     uint8_t marker;
@@ -80,8 +78,26 @@ struct stats
 typedef struct stats header;
 typedef struct free_area block;
 
+const int MAGICAL_BYTES = 0x55;
+const int BLOCK_MARKER = 0xDD;
+const int PAGE_SIZE = 4096;
+const int FIRST_BLOCK_OFFSET = sizeof(block);
+
 static char *heap_start = NULL;
 
+block *find_prev_used_block(block *ptr)
+{
+    block *mov_ptr = ptr;
+    while (mov_ptr->prev != NULL)
+    {
+        mov_ptr = mov_ptr->prev;
+        if (mov_ptr->in_use == true)
+        {
+            return mov_ptr;
+        }
+    }
+    return NULL;
+}
 
 header *get_malloc_header()
 {
@@ -101,6 +117,38 @@ block *find_last_block()
     return mem_block;
 }
 
+void reduce_heap_size()
+{
+    block *last_block = find_last_block();
+    block *prev_used_block = find_prev_used_block(last_block);
+    if (prev_used_block == NULL)
+    {
+        if (last_block->length > PAGE_SIZE)
+        {
+            last_block->length = PAGE_SIZE;
+        }
+        prev_used_block = last_block;
+    }
+    void *new_end = (void *) prev_used_block + sizeof(block) + prev_used_block->length;
+    void *heap_end = w_sbrk(0);
+    while (new_end < (heap_end - PAGE_SIZE))
+    {
+        w_sbrk(-PAGE_SIZE);
+        heap_end = w_sbrk(0);
+        header *mem_header = get_malloc_header();
+        mem_header->amount_of_pages -=1;
+    }
+    if (heap_end - new_end > sizeof(block) + 1) // TODO: review this case
+    {
+        block *new_not_used = (block *) new_end;
+        new_not_used->marker = BLOCK_MARKER;
+        new_not_used->in_use = false;
+        new_not_used->length = heap_end - new_end - sizeof(block);
+        new_not_used->next = NULL;
+        new_not_used->prev = prev_used_block;
+        prev_used_block->next = new_not_used;
+    }
+}
 int *add_used_block(ssize_t size)
 {
     header *malloc_header = get_malloc_header();
