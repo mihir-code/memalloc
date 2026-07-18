@@ -85,6 +85,18 @@ const int FIRST_BLOCK_OFFSET = sizeof(block);
 
 static char *heap_start = NULL;
 
+header *get_malloc_header();
+
+void* size_checker(int size)
+{
+    header *malloc_header = get_malloc_header();
+    if (size >= 0)
+    {
+        malloc_header->lock = false;
+        return NULL;
+    }
+
+}
 block *find_prev_used_block(block *ptr)
 {
     block *mov_ptr = ptr;
@@ -151,6 +163,7 @@ void reduce_heap_size()
 }
 int *add_used_block(ssize_t size)
 {
+    size_checker(size);
     header *malloc_header = get_malloc_header();
     while (malloc_header->lock) // thread safety
     {
@@ -165,21 +178,22 @@ int *add_used_block(ssize_t size)
     while (mem_block != NULL)
     {
         assert(mem_block->marker == BLOCK_MARKER);
-        if ((mem_block->length + sizeof(block)) >= size && mem_block->in_use == false)
+        if ((mem_block->length + sizeof(block)) >= size && mem_block->in_use == false) // if we have enough space and the block isn't in use
         {
-            if (smallest_block == NULL || smallest_block->length > mem_block->length)
+            if (smallest_block == NULL || smallest_block->length > mem_block->length) // first run through smallest_block will becomes whatever mem_block size is
             {
-                smallest_block = mem_block;
+                smallest_block = mem_block; // reason why this is best fit and not first fit
             }
         }
-        last_block = mem_block;
-        mem_block = mem_block->next;
+        last_block = mem_block; // lets us know what the last block is
+        mem_block = mem_block->next; // go to the next block
     }
-    // I think this is that there isn't enough space so we request more heap space.
+    // There is not enough space so we add more space
+    assert(last_block->in_use == false); // the last block should be free implicitly but it's good to have it explicitly stated here.
     if (smallest_block == NULL)
     {
         block *last_block = find_last_block();
-        while (last_block->length < size)
+        while (last_block->length < size) // may need more than 1 pass, that's why it's not an if statement
         {
             w_sbrk(4096);
             last_block->length +=4096; // this makes the last free_block 4096 bytes larger
@@ -187,14 +201,19 @@ int *add_used_block(ssize_t size)
         }
         smallest_block = last_block;
     }
+    // Now we have found a block from growing the heap or best-fit
     smallest_block->in_use = true;
-    int end_of_list = smallest_block->length - size - sizeof(block) - 1; // can we add the header space as well
-    if (end_of_list <= 0)
+    int64_t end_of_list = (int64_t)smallest_block->length - (int64_t)size - (int64_t)sizeof(block) - 1; // leftover space
+    while (end_of_list <= 0) // if our requested size is the same as the smallest_block
     {
+        if (smallest_block != last_block)
+        {
+            assert(smallest_block == last_block);
+        }
         w_sbrk(4096);
         malloc_header->amount_of_pages += 1;
         last_block->length += 4096;
-        end_of_list = smallest_block->length - size - sizeof(block) - 1;
+        end_of_list = smallest_block->length - size - sizeof(block) - 1; // now we should have leftover space
     }
     int remaining_size = end_of_list + 1;
     malloc_header->amount_of_blocks += 1;
@@ -202,6 +221,7 @@ int *add_used_block(ssize_t size)
     new_block->marker = BLOCK_MARKER;
     new_block->prev = smallest_block;
     new_block->next = smallest_block->next;
+    new_block->in_use = false;
     if (new_block->next != NULL)
     {
         (new_block->next)->prev = new_block;
@@ -212,7 +232,8 @@ int *add_used_block(ssize_t size)
     malloc_header->lock = false;
     return (int *)((char *) smallest_block + sizeof(block));
 }
-/// returns an int pointer
+// returns an int pointer
+/// frees memory
 int *an_malloc(intptr_t size)
 {
     if (heap_start == NULL)
