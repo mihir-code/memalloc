@@ -233,7 +233,7 @@ int *add_used_block(ssize_t size)
     return (int *)((char *) smallest_block + sizeof(block));
 }
 // returns an int pointer
-/// frees memory
+/// allocates memory
 int *an_malloc(intptr_t size)
 {
     if (heap_start == NULL)
@@ -248,63 +248,66 @@ int *an_malloc(intptr_t size)
     *(heap_start) = MAGICAL_BYTES;
     // Setting up the header
     header *malloc_header = (header *) heap_start; // this is a pointer to header
-    malloc_header->amount_of_blocks = 1; // dereference the pointer and acccess amount_of_blocks
+    malloc_header->amount_of_blocks = 1; // dereference the pointer and access amount_of_blocks
     malloc_header->amount_of_pages = 1;
     // Setting up the block
     block *first_block = (block*) ((char *) heap_start + sizeof(header));
     first_block -> marker = BLOCK_MARKER;
     first_block -> in_use = false;
-    first_block -> length = length - sizeof(header) - sizeof(header);
+    first_block -> length = length - sizeof(header) - sizeof(block);
     first_block -> prev = NULL;
     first_block -> next = NULL;
     }
-    return add_used_block(size);
+    return add_used_block(size); // the actual work gets done in add_used_block, an_malloc is first
 }
 
 bool an_free(void *ptr)
-{
+{ // thread safety check
     header *malloc_header = get_malloc_header();
-    while(malloc_header->lock)
+    while(malloc_header->lock) // spin check
     {
         Sleep(1000);
     }
-    malloc_header->lock = true;
+    malloc_header->lock = true; // Thread X will immediately claim
     block *mem_block = ptr - sizeof(block);
     if (mem_block->marker != BLOCK_MARKER){
+        malloc_header->lock = false;
         return false;
     }
     else{
         mem_block->in_use = false;
         memset(ptr, 0, mem_block->length);
-        // forward case
+        // forward coalescing case
         if (mem_block->next != NULL && (mem_block->next)->in_use == false){ // TODO: There are many edge cases we need to check here
             block *not_used = mem_block->next;
-            if (not_used != NULL){
+            if (not_used != NULL)
+            {
                 mem_block->next = not_used->next;
                 if (not_used->next != NULL){
-                    not_used->next->prev = mem_block;
+                    not_used->next->prev = mem_block; // after coalescing, we need to update the pointers
                 }
                 else{
                     mem_block->next = NULL;
                 }
+                size_t old_not_used = sizeof(block) + not_used->length;
                 mem_block->length += sizeof(block) + not_used->length;
-                memset((void *) not_used, 0, mem_block->length); // erase header and data
-                malloc_header->amount_of_blocks -=1;
+                memset((void *) not_used, 0,old_not_used); // erase header and data
+                malloc_header->amount_of_blocks -=1; // since we went from two blocks to 1
             }
-            // backward case
-            if (mem_block->prev != NULL && (mem_block->prev)->in_use == false){
-                block *del_prev_block = mem_block;
-                mem_block = mem_block->prev;
-                mem_block->length += sizeof(block) + del_prev_block->length;
-                mem_block->next = del_prev_block->next;
-                if (mem_block->next != NULL)
-                {
-                    mem_block->next->prev = mem_block;
-                }
-                malloc_header->amount_of_blocks -=1;
-            }
-            reduce_heap_size();
         }
+        // backward coalescing case
+        if (mem_block->prev != NULL && (mem_block->prev)->in_use == false){
+            block *del_prev_block = mem_block;
+            mem_block = mem_block->prev;
+            mem_block->length += sizeof(block) + del_prev_block->length;
+            mem_block->next = del_prev_block->next;
+            if (mem_block->next != NULL)
+            {
+                mem_block->next->prev = mem_block; // same as above coalescing but for the prev case
+            }
+            malloc_header->amount_of_blocks -=1;
+        }
+        reduce_heap_size();
     }
     malloc_header->lock = false;
     return true;
